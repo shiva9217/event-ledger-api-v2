@@ -1,0 +1,45 @@
+services:
+
+  account-service:
+    build:
+      context: .
+      dockerfile: account-service/Dockerfile
+    image: eventledger/account-service:latest
+    container_name: account-service
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8081/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - ledger-net
+
+  event-gateway:
+    build:
+      context: .
+      dockerfile: event-gateway/Dockerfile
+    image: eventledger/event-gateway:latest
+    container_name: event-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      # Service-to-service URL resolves via the compose network DNS name
+      ACCOUNT_SERVICE_URL: http://account-service:8081
+    depends_on:
+      account-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - ledger-net
+
+networks:
+  ledger-net:
+    driver: bridge
