@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!-- Spring Boot puts traceId/spanId into the MDC when micrometer-tracing is present. -->
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="account-service"/>
+
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeMdcKeyName>traceId</includeMdcKeyName>
+            <includeMdcKeyName>spanId</includeMdcKeyName>
+            <customFields>{"service":"${appName}"}</customFields>
+            <fieldNames>
+                <timestamp>timestamp</timestamp>
+                <level>level</level>
+                <message>message</message>
+                <thread>[ignore]</thread>
+                <logger>[ignore]</logger>
+                <version>[ignore]</version>
+                <levelValue>[ignore]</levelValue>
+            </fieldNames>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="JSON"/>
+    </root>
+</configuration>
