@@ -97,13 +97,19 @@ ACCOUNT_SERVICE_URL=http://localhost:8081 mvn -pl event-gateway spring-boot:run
 ## 6. Run the tests
 
 ```bash
-mvn test                       # both modules (11 tests)
-mvn -pl account-service test   # account-service only (5)
-mvn -pl event-gateway  test    # gateway only (6)
+mvn test                              # all modules (14 tests)
+mvn -pl account-service test          # account-service only (5)
+mvn -pl event-gateway  test           # gateway only (6)
+mvn -pl integration-tests -am test    # end-to-end only (3)
 ```
 
-The gateway tests use **WireMock** to stub account-service (circuit-breaker,
-trace-propagation, graceful-degradation scenarios).
+- The **gateway** tests use **WireMock** to stub account-service (circuit-breaker,
+  trace-propagation, graceful-degradation scenarios) — fast contract tests.
+- The **integration-tests** module is a true **end-to-end** test: it boots **both real
+  services** in-process on random ports (each with its own H2) and drives the gateway
+  over real HTTP, which in turn makes real HTTP calls to the real account-service —
+  verifying ingest → apply → balance, end-to-end idempotency, chronological listing,
+  and trace propagation across the service boundary.
 
 ---
 
