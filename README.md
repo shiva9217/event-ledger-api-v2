@@ -97,19 +97,30 @@ ACCOUNT_SERVICE_URL=http://localhost:8081 mvn -pl event-gateway spring-boot:run
 ## 6. Run the tests
 
 ```bash
-mvn test                              # all modules (14 tests)
-mvn -pl account-service test          # account-service only (5)
-mvn -pl event-gateway  test           # gateway only (6)
+mvn test                              # all modules (50 tests)
+mvn -pl account-service test          # account-service only (18)
+mvn -pl event-gateway  test           # gateway only (29)
 mvn -pl integration-tests -am test    # end-to-end only (3)
 ```
 
-- The **gateway** tests use **WireMock** to stub account-service (circuit-breaker,
-  trace-propagation, graceful-degradation scenarios) — fast contract tests.
-- The **integration-tests** module is a true **end-to-end** test: it boots **both real
-  services** in-process on random ports (each with its own H2) and drives the gateway
-  over real HTTP, which in turn makes real HTTP calls to the real account-service —
-  verifying ingest → apply → balance, end-to-end idempotency, chronological listing,
-  and trace propagation across the service boundary.
+**Coverage** is measured by JaCoCo (report under `target/site/jacoco/index.html`) and
+**gated** in the build — `mvn test` fails if either service drops below **85% line / 65%
+branch** coverage. Current: account-service ~93% line, event-gateway ~96% line.
+
+The suite covers:
+- **Core**: idempotency, out-of-order, balance, validation — plus negative/error-contract
+  cases (400/404, malformed JSON) asserting the RFC 9457 ProblemDetail body shape.
+- **Resiliency (deep)**: retry only on connection errors (never on 4xx), timeout → 503,
+  circuit-breaker OPEN → HALF_OPEN → CLOSED recovery, and FAILED-status persistence.
+- **Concurrency**: 12 simultaneous same-`eventId` submissions apply exactly once with no
+  5xx (per-eventId lock + `TransactionTemplate` in both services).
+- **Observability**: the custom metrics actually move; the account-service **continues and
+  logs** the gateway's trace id (true end-to-end traceability).
+- **Integration**: the `integration-tests` module boots **both real services** in-process
+  on random ports and drives the gateway over real HTTP — verifying ingest → apply →
+  balance, idempotency, chronological listing, and trace propagation across the boundary.
+- The **gateway** unit tests use **WireMock** to stub account-service for fast, deterministic
+  resiliency/trace/degradation scenarios.
 
 ---
 

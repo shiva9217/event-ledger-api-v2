@@ -10,24 +10,38 @@ import com.eventledger.account.dto.TransactionResponse;
 import com.eventledger.account.exception.AccountNotFoundException;
 import com.eventledger.account.repository.AccountRepository;
 import com.eventledger.account.repository.AccountTransactionRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class AccountService {
 
     private final AccountRepository accountRepository;
     private final AccountTransactionRepository transactionRepository;
+    private final TransactionTemplate transactionTemplate;
+
+    /** Per-eventId locks serialise concurrent applies of the SAME event (idempotency). */
+    private final ConcurrentHashMap<String, ReentrantLock> locks = new ConcurrentHashMap<>();
+
+    public AccountService(AccountRepository accountRepository,
+                          AccountTransactionRepository transactionRepository,
+                          PlatformTransactionManager transactionManager) {
+        this.accountRepository = accountRepository;
+        this.transactionRepository = transactionRepository;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
+    }
 
     /**
      * Applies a transaction to an account.
@@ -36,11 +50,22 @@ public class AccountService {
      *   <li>Idempotent on {@code eventId}: a replay is a no-op that returns the original.</li>
      * </ul>
      */
-    @Transactional
     public ApplyResult applyTransaction(String accountId, TransactionRequest request) {
         log.info("Applying transaction: accountId={}, eventId={}, type={}, amount={}",
                 accountId, request.eventId(), request.type(), request.amount());
 
+        // A per-eventId lock serialises concurrent applies of the same event; the commit
+        // happens INSIDE the lock (via TransactionTemplate) so a waiting thread always sees the
+        // committed result and takes the idempotent path - no duplicate row, no 5xx.
+        ReentrantLock lock = acquire(request.eventId());
+        try {
+            return transactionTemplate.execute(status -> doApply(accountId, request));
+        } finally {
+            release(request.eventId(), lock);
+        }
+    }
+
+    private ApplyResult doApply(String accountId, TransactionRequest request) {
         // Idempotency guard — same eventId is never applied twice.
         var existing = transactionRepository.findByEventId(request.eventId());
         if (existing.isPresent()) {
@@ -60,17 +85,9 @@ public class AccountService {
                 .appliedAt(Instant.now())
                 .build();
 
-        try {
-            AccountTransaction saved = transactionRepository.saveAndFlush(txn);
-            log.info("Transaction applied: eventId={}, accountId={}", saved.getEventId(), accountId);
-            return new ApplyResult(toResponse(saved), true);
-        } catch (DataIntegrityViolationException ex) {
-            // Concurrent replay won the race — return the persisted winner idempotently.
-            log.warn("Concurrent duplicate detected for eventId={}, returning existing", request.eventId());
-            AccountTransaction winner = transactionRepository.findByEventId(request.eventId())
-                    .orElseThrow(() -> ex);
-            return new ApplyResult(toResponse(winner), false);
-        }
+        AccountTransaction saved = transactionRepository.saveAndFlush(txn);
+        log.info("Transaction applied: eventId={}, accountId={}", saved.getEventId(), accountId);
+        return new ApplyResult(toResponse(saved), true);
     }
 
     @Transactional(readOnly = true)
@@ -107,6 +124,17 @@ public class AccountService {
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────
+
+    private ReentrantLock acquire(String eventId) {
+        ReentrantLock lock = locks.computeIfAbsent(eventId, k -> new ReentrantLock());
+        lock.lock();
+        return lock;
+    }
+
+    private void release(String eventId, ReentrantLock lock) {
+        lock.unlock();
+        locks.remove(eventId);
+    }
 
     private Account getOrCreateAccount(String accountId) {
         return accountRepository.findByAccountId(accountId)

@@ -14,12 +14,16 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.tracing.Tracer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Slf4j
 @Service
@@ -29,15 +33,21 @@ public class EventService {
     private final AccountServiceClient accountServiceClient;
     private final MeterRegistry meterRegistry;
     private final Tracer tracer;
+    private final TransactionTemplate transactionTemplate;
+
+    /** Per-eventId locks serialise concurrent submissions of the SAME event (idempotency). */
+    private final ConcurrentHashMap<String, ReentrantLock> locks = new ConcurrentHashMap<>();
 
     public EventService(LedgerEventRepository repository,
                         AccountServiceClient accountServiceClient,
                         MeterRegistry meterRegistry,
-                        Tracer tracer) {
+                        Tracer tracer,
+                        PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.accountServiceClient = accountServiceClient;
         this.meterRegistry = meterRegistry;
         this.tracer = tracer;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     /**
@@ -52,12 +62,23 @@ public class EventService {
      *   </li>
      * </ul>
      */
-    @Transactional
     public CreateEventResult ingest(EventRequest request) {
         String traceId = currentTraceId();
         log.info("Ingesting event: eventId={}, accountId={}, type={}, amount={}, traceId={}",
                 request.eventId(), request.accountId(), request.type(), request.amount(), traceId);
 
+        // A per-eventId lock serialises concurrent submissions of the same event; the commit
+        // happens INSIDE the lock (via TransactionTemplate) so a waiting thread always sees the
+        // committed event and takes the idempotent DUPLICATE path - no duplicate row, no 5xx.
+        ReentrantLock lock = acquire(request.eventId());
+        try {
+            return transactionTemplate.execute(status -> doIngest(request, traceId));
+        } finally {
+            release(request.eventId(), lock);
+        }
+    }
+
+    private CreateEventResult doIngest(EventRequest request, String traceId) {
         // Idempotency — return the original, untouched.
         var existing = repository.findByEventId(request.eventId());
         if (existing.isPresent()) {
@@ -125,6 +146,17 @@ public class EventService {
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────
+
+    private ReentrantLock acquire(String eventId) {
+        ReentrantLock lock = locks.computeIfAbsent(eventId, k -> new ReentrantLock());
+        lock.lock();
+        return lock;
+    }
+
+    private void release(String eventId, ReentrantLock lock) {
+        lock.unlock();
+        locks.remove(eventId);
+    }
 
     private String currentTraceId() {
         var span = tracer.currentSpan();
