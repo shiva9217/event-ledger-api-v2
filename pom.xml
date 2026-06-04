@@ -29,6 +29,33 @@
         <resilience4j.version>2.2.0</resilience4j.version>
         <logstash.encoder.version>7.4</logstash.encoder.version>
         <wiremock.version>3.9.2</wiremock.version>
+        <jacoco.version>0.8.12</jacoco.version>
     </properties>
+
+    <build>
+        <plugins>
+            <!-- Code coverage: instruments tests and produces an HTML/XML report per module. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 
 </project>
